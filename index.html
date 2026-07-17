@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root{ --radius: 10px; }
   [data-theme="sage"]{
@@ -121,10 +122,32 @@
   .stat-pill span{font-size:.75rem;color:var(--text-muted);}
   .home-cta{width:100%;margin-bottom:8px;}
 
-  .lock-wrap{text-align:center;padding:60px 20px;}
-  .lock-input{max-width:220px;width:100%;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:1rem;margin-bottom:10px;}
-  .lock-error{color:#c0392b;font-size:.8rem;min-height:16px;margin-bottom:14px;}
-  .pass-form input{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:.88rem;background:var(--surface);color:var(--text);margin-bottom:8px;}
+  .hidden{display:none !important;}
+  .auth-wrap{max-width:390px;margin:34px auto 0;padding:0 4px;}
+  .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;}
+  .auth-mark{text-align:center;font-size:2rem;margin-bottom:8px;}
+  .auth-title{text-align:center;font-size:1.35rem;margin:0 0 6px;}
+  .auth-sub{text-align:center;color:var(--text-muted);font-size:.86rem;line-height:1.45;margin:0 0 20px;}
+  .auth-field{width:100%;padding:10px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.92rem;margin-bottom:9px;}
+  .auth-field:focus{outline:none;border-color:var(--accent);}
+  .auth-primary{width:100%;padding:10px 14px;margin-top:2px;}
+  .auth-links{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:13px;}
+  .text-btn{background:none;border:none;color:var(--text-muted);font-size:.82rem;padding:2px;}
+  .text-btn:hover{color:var(--text);}
+  .form-message{font-size:.82rem;line-height:1.4;min-height:18px;margin:8px 0 2px;color:var(--text-muted);}
+  .form-message.error{color:#b33a31;}
+  .form-message.success{color:#3e7548;}
+  .setup-code{display:block;text-align:left;white-space:pre-wrap;word-break:break-word;background:var(--surface-alt);border-radius:8px;padding:10px;font-size:.78rem;margin:10px 0;}
+  .account-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+  .account-row:last-child{border-bottom:none;}
+  .account-label{font-size:.82rem;color:var(--text-muted);}
+  .account-value{font-size:.88rem;text-align:right;word-break:break-all;}
+  .settings-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .danger-btn{color:#a4312b;border-color:#e1b9b6;}
+  .sync-status{font-size:.72rem;color:var(--text-muted);white-space:nowrap;}
+  .sync-status.error{color:#b33a31;}
+  .sync-status.ok{color:#3e7548;}
+  .file-input{display:none;}
 
   .loading{text-align:center;padding:60px 0;color:var(--text-muted);}
   @media (max-width:420px){
@@ -135,17 +158,19 @@
 </head>
 <body data-theme="sage">
 <div id="app">
-  <header>
+  <header id="app-header" class="hidden">
     <button class="icon-btn" id="home-btn" title="Home">⌂</button>
     <h1>Daybook</h1>
     <div class="header-right">
+      <span class="sync-status" id="sync-status"></span>
       <button class="icon-btn" id="settings-btn" title="Settings">⚙</button>
       <div class="swatches" id="swatches"></div>
     </div>
   </header>
-  <div id="content"><div class="loading">Loading your journal…</div></div>
+  <div id="content"><div class="loading">Loading Daybook…</div></div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (function(){
   const THEMES = ['sage','lavender','blush','sky','sand','mist'];
@@ -232,22 +257,26 @@
   const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-  // Local storage adapter — replaces Claude's window.storage API so this
-  // runs standalone on GitHub Pages / Netlify / anywhere else.
-  const storage = {
-    async get(key){
-      const v = localStorage.getItem(key);
-      return v === null ? null : { key, value: v };
-    },
-    async set(key, value){
-      localStorage.setItem(key, value);
-      return { key, value };
-    }
-  };
+  // Paste the values from Supabase: Project Settings → API.
+  // Use the Project URL and the publishable key (or legacy anon key).
+  // Never place a service_role or secret key in this file.
+  const SUPABASE_URL = 'PASTE_YOUR_SUPABASE_URL_HERE';
+  const SUPABASE_PUBLISHABLE_KEY = 'PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY_HERE';
 
-  let state = { theme:'sage', checklistItems: [], goals: [], homeAffirmation: null, passcodeHash: null, days: {} };
+  const CONFIGURED =
+    /^https:\/\/.+\.supabase\.co$/.test(SUPABASE_URL) &&
+    !SUPABASE_PUBLISHABLE_KEY.startsWith('PASTE_') &&
+    SUPABASE_PUBLISHABLE_KEY.length > 20;
+
+  const LEGACY_STORAGE_KEY = 'daybook-state';
+  let supabaseClient = null;
+  let currentUser = null;
+  let state = { theme:'sage', checklistItems: [], goals: [], homeAffirmation: null, days: {} };
   let saveTimer = null;
-  let unlocked = false;
+  let syncQueue = Promise.resolve();
+  let appReady = false;
+  let recoveryMode = false;
+  let enteringUserId = null;
 
   const today = new Date();
   const todayStr = fmt(today);
@@ -255,6 +284,8 @@
 
   const contentEl = document.getElementById('content');
   const swatchesEl = document.getElementById('swatches');
+  const headerEl = document.getElementById('app-header');
+  const syncStatusEl = document.getElementById('sync-status');
 
   function pad(n){ return n<10 ? '0'+n : ''+n; }
   function fmt(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
@@ -274,13 +305,6 @@
     let h=0;
     for(let i=0;i<str.length;i++){ h = (h*31 + str.charCodeAt(i)) >>> 0; }
     return h % mod;
-  }
-  // Not cryptographic — this only exists to avoid storing the passcode as
-  // plain text. It's a privacy screen, not real security.
-  function simpleHash(str){
-    let h = 5381;
-    for(let i=0;i<str.length;i++){ h = ((h*33) ^ str.charCodeAt(i)) >>> 0; }
-    return h.toString(36);
   }
   function getPromptForDate(dateStr){
     const day = getDay(dateStr);
@@ -305,32 +329,6 @@
     });
   }
 
-  async function loadState(){
-    try{
-      const res = await storage.get('daybook-state');
-      if(res && res.value){
-        const parsed = JSON.parse(res.value);
-        state = Object.assign({theme:'sage', checklistItems:[], goals:[], homeAffirmation:null, passcodeHash:null, days:{}}, parsed);
-        state.checklistItems.forEach(it=>{ if(it.doneDate===undefined) it.doneDate = null; });
-        if(!Array.isArray(state.goals)) state.goals = [];
-      } else {
-        state = defaultState();
-      }
-    }catch(e){
-      state = defaultState();
-    }
-    seedChecklistItems();
-    await saveState(true);
-    document.body.setAttribute('data-theme', state.theme || 'sage');
-    renderSwatches();
-    if(state.passcodeHash){
-      renderLock();
-    } else {
-      unlocked = true;
-      renderHome();
-    }
-  }
-
   function defaultState(){
     return {
       theme:'sage',
@@ -341,20 +339,123 @@
       ],
       goals: [],
       homeAffirmation: null,
-      passcodeHash: null,
       days:{}
     };
   }
 
+  function normalizeState(raw){
+    const normalized = Object.assign(defaultState(), raw && typeof raw==='object' ? raw : {});
+    if(!Array.isArray(normalized.checklistItems)) normalized.checklistItems = [];
+    normalized.checklistItems.forEach(it=>{ if(it.doneDate===undefined) it.doneDate = null; });
+    if(!Array.isArray(normalized.goals)) normalized.goals = [];
+    if(!normalized.days || typeof normalized.days!=='object' || Array.isArray(normalized.days)) normalized.days = {};
+    if(!THEMES.includes(normalized.theme)) normalized.theme = 'sage';
+    delete normalized.passcodeHash;
+    return normalized;
+  }
+
+  function cacheKey(){
+    return currentUser ? `daybook-state:${currentUser.id}` : null;
+  }
+
+  function readCachedState(){
+    const keys = [cacheKey(), LEGACY_STORAGE_KEY].filter(Boolean);
+    for(const key of keys){
+      try{
+        const raw = localStorage.getItem(key);
+        if(raw) return JSON.parse(raw);
+      }catch(e){}
+    }
+    return null;
+  }
+
+  function writeCachedState(snapshot){
+    const key = cacheKey();
+    if(!key) return;
+    try{ localStorage.setItem(key, JSON.stringify(snapshot)); }catch(e){}
+  }
+
+  function setSyncStatus(text, kind=''){
+    syncStatusEl.textContent = text || '';
+    syncStatusEl.className = `sync-status ${kind}`.trim();
+  }
+
+  function showAppHeader(show){
+    headerEl.classList.toggle('hidden', !show);
+  }
+
+  async function loadState(){
+    contentEl.innerHTML = '<div class="loading">Loading your journal…</div>';
+    const cached = readCachedState();
+
+    try{
+      const { data, error } = await supabaseClient
+        .from('daybooks')
+        .select('journal_data, updated_at')
+        .eq('user_id', currentUser.id)
+        .maybeSingle();
+      if(error) throw error;
+
+      if(data && data.journal_data){
+        state = normalizeState(data.journal_data);
+        writeCachedState(state);
+        setSyncStatus('Synced', 'ok');
+      } else {
+        state = normalizeState(cached || defaultState());
+        seedChecklistItems();
+        await persistState(state);
+        try{ localStorage.removeItem(LEGACY_STORAGE_KEY); }catch(e){}
+      }
+    }catch(error){
+      if(cached){
+        state = normalizeState(cached);
+        setSyncStatus('Offline copy', 'error');
+      } else {
+        throw error;
+      }
+    }
+
+    seedChecklistItems();
+    writeCachedState(state);
+    document.body.setAttribute('data-theme', state.theme || 'sage');
+    renderSwatches();
+  }
+
+  async function persistState(snapshot){
+    if(!currentUser || !supabaseClient) return;
+    writeCachedState(snapshot);
+    setSyncStatus('Saving…');
+
+    const { error } = await supabaseClient
+      .from('daybooks')
+      .upsert({
+        user_id: currentUser.id,
+        journal_data: snapshot,
+        updated_at: new Date().toISOString()
+      }, { onConflict:'user_id' });
+
+    if(error){
+      setSyncStatus('Sync failed', 'error');
+      throw error;
+    }
+    setSyncStatus('Synced', 'ok');
+  }
+
   async function saveState(immediate){
     if(saveTimer) clearTimeout(saveTimer);
-    if(immediate){
-      try{ await storage.set('daybook-state', JSON.stringify(state)); }catch(e){}
-      return;
-    }
-    saveTimer = setTimeout(async ()=>{
-      try{ await storage.set('daybook-state', JSON.stringify(state)); }catch(e){}
-    }, 500);
+    const snapshot = JSON.parse(JSON.stringify(state));
+    writeCachedState(snapshot);
+
+    const run = ()=>{
+      const queuedSave = syncQueue
+        .catch(()=>{})
+        .then(()=>persistState(snapshot));
+      syncQueue = queuedSave.catch(error=>console.error('Daybook sync failed:', error));
+      return queuedSave;
+    };
+
+    if(immediate) return run();
+    saveTimer = setTimeout(run, 650);
   }
 
   function renderSwatches(){
@@ -371,113 +472,334 @@
     });
   }
 
-  function renderLock(){
+  function currentPageUrl(){
+    return window.location.origin + window.location.pathname;
+  }
+
+  function renderConfigNeeded(){
+    showAppHeader(false);
     contentEl.innerHTML = `
-      <div class="lock-wrap">
-        <div style="font-size:2rem;margin-bottom:10px;">⌂</div>
-        <h2 style="margin:0 0 6px;">Daybook is locked</h2>
-        <p class="day-sub">Enter your passcode to continue.</p>
-        <input type="password" id="lock-input" class="lock-input" placeholder="Passcode">
-        <div id="lock-error" class="lock-error"></div>
-        <div><button class="btn" id="unlock-btn">Unlock</button></div>
-        <button class="btn-ghost" id="forgot-btn" style="margin-top:24px;">Forgot passcode?</button>
-        <div id="forgot-confirm" style="display:none;margin-top:14px;">
-          <p class="checklist-note">This clears everything — entries, checklist, goals — with no way to undo it.</p>
-          <button class="btn" id="confirm-reset-btn" style="background:#c0392b;">Reset all data</button>
-          <button class="btn-ghost" id="cancel-reset-btn">Cancel</button>
+      <div class="auth-wrap">
+        <div class="auth-card">
+          <div class="auth-mark">⌂</div>
+          <h2 class="auth-title">Connect Daybook</h2>
+          <p class="auth-sub">The app is ready, but it needs your Supabase project URL and publishable key.</p>
+          <p class="checklist-note">Open <strong>index.html</strong>, find these two lines, and replace the placeholders:</p>
+          <code class="setup-code">const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'YOUR-PUBLISHABLE-KEY';</code>
+          <p class="checklist-note">Then upload the edited file to GitHub as <strong>index.html</strong>.</p>
         </div>
-      </div>
-    `;
-    const input = document.getElementById('lock-input');
-    const err = document.getElementById('lock-error');
-    function tryUnlock(){
-      if(simpleHash(input.value) === state.passcodeHash){
-        unlocked = true;
-        renderHome();
-      } else {
-        err.textContent = 'Wrong passcode.';
-        input.value='';
-        input.focus();
+      </div>`;
+  }
+
+  function renderAuth(mode='signin', message='', messageKind=''){
+    showAppHeader(false);
+    appReady = false;
+    recoveryMode = false;
+    const isSignup = mode==='signup';
+    contentEl.innerHTML = `
+      <div class="auth-wrap">
+        <div class="auth-card">
+          <div class="auth-mark">⌂</div>
+          <h2 class="auth-title">${isSignup ? 'Create your Daybook account' : 'Sign in to Daybook'}</h2>
+          <p class="auth-sub">Your entries are stored in your private account and sync between devices.</p>
+          <input class="auth-field" type="email" id="auth-email" autocomplete="email" placeholder="Email">
+          <input class="auth-field" type="password" id="auth-password" autocomplete="${isSignup?'new-password':'current-password'}" placeholder="Password">
+          ${isSignup ? '<input class="auth-field" type="password" id="auth-confirm" autocomplete="new-password" placeholder="Confirm password">' : ''}
+          <div class="form-message ${messageKind}" id="auth-message">${escapeHtml(message)}</div>
+          <button class="btn auth-primary" id="auth-submit">${isSignup ? 'Create account' : 'Sign in'}</button>
+          <div class="auth-links">
+            <button class="text-btn" id="auth-switch">${isSignup ? 'Already have an account?' : 'Create account'}</button>
+            ${isSignup ? '' : '<button class="text-btn" id="forgot-password">Forgot password?</button>'}
+          </div>
+        </div>
+      </div>`;
+
+    const email = document.getElementById('auth-email');
+    const password = document.getElementById('auth-password');
+    const messageEl = document.getElementById('auth-message');
+    const submit = document.getElementById('auth-submit');
+
+    async function submitAuth(){
+      const emailValue = email.value.trim();
+      const passwordValue = password.value;
+      messageEl.className = 'form-message';
+      messageEl.textContent = '';
+      if(!emailValue || !passwordValue){
+        messageEl.className = 'form-message error';
+        messageEl.textContent = 'Enter your email and password.';
+        return;
+      }
+      if(isSignup){
+        const confirm = document.getElementById('auth-confirm').value;
+        if(passwordValue !== confirm){
+          messageEl.className = 'form-message error';
+          messageEl.textContent = 'Passwords do not match.';
+          return;
+        }
+        if(passwordValue.length < 8){
+          messageEl.className = 'form-message error';
+          messageEl.textContent = 'Use at least 8 characters.';
+          return;
+        }
+      }
+
+      submit.disabled = true;
+      submit.textContent = isSignup ? 'Creating…' : 'Signing in…';
+      try{
+        if(isSignup){
+          const { data, error } = await supabaseClient.auth.signUp({
+            email: emailValue,
+            password: passwordValue,
+            options: { emailRedirectTo: currentPageUrl() }
+          });
+          if(error) throw error;
+          if(data.session){
+            await enterApp(data.user);
+          } else {
+            messageEl.className = 'form-message success';
+            messageEl.textContent = 'Account created. Check your email to confirm it, then sign in.';
+          }
+        } else {
+          const { data, error } = await supabaseClient.auth.signInWithPassword({
+            email: emailValue,
+            password: passwordValue
+          });
+          if(error) throw error;
+          await enterApp(data.user);
+        }
+      }catch(error){
+        messageEl.className = 'form-message error';
+        messageEl.textContent = error.message || 'Authentication failed.';
+      }finally{
+        submit.disabled = false;
+        submit.textContent = isSignup ? 'Create account' : 'Sign in';
       }
     }
-    document.getElementById('unlock-btn').addEventListener('click', tryUnlock);
-    input.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); tryUnlock(); } });
-    input.focus();
 
-    document.getElementById('forgot-btn').addEventListener('click', ()=>{
-      document.getElementById('forgot-confirm').style.display='block';
+    submit.addEventListener('click', submitAuth);
+    [email,password].forEach(el=>el.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ e.preventDefault(); submitAuth(); }
+    }));
+    document.getElementById('auth-switch').addEventListener('click', ()=>renderAuth(isSignup?'signin':'signup'));
+
+    const forgot = document.getElementById('forgot-password');
+    if(forgot){
+      forgot.addEventListener('click', async ()=>{
+        const emailValue = email.value.trim();
+        if(!emailValue){
+          messageEl.className = 'form-message error';
+          messageEl.textContent = 'Enter your email first.';
+          email.focus();
+          return;
+        }
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(emailValue, { redirectTo: currentPageUrl() });
+        if(error){
+          messageEl.className = 'form-message error';
+          messageEl.textContent = error.message;
+        }else{
+          messageEl.className = 'form-message success';
+          messageEl.textContent = 'Password-reset email sent.';
+        }
+      });
+    }
+    email.focus();
+  }
+
+  function renderPasswordRecovery(){
+    showAppHeader(false);
+    recoveryMode = true;
+    contentEl.innerHTML = `
+      <div class="auth-wrap">
+        <div class="auth-card">
+          <div class="auth-mark">⌂</div>
+          <h2 class="auth-title">Choose a new password</h2>
+          <p class="auth-sub">Enter a new password for your Daybook account.</p>
+          <input class="auth-field" type="password" id="recovery-password" autocomplete="new-password" placeholder="New password">
+          <input class="auth-field" type="password" id="recovery-confirm" autocomplete="new-password" placeholder="Confirm new password">
+          <div class="form-message" id="recovery-message"></div>
+          <button class="btn auth-primary" id="recovery-submit">Update password</button>
+        </div>
+      </div>`;
+
+    document.getElementById('recovery-submit').addEventListener('click', async ()=>{
+      const p1 = document.getElementById('recovery-password').value;
+      const p2 = document.getElementById('recovery-confirm').value;
+      const messageEl = document.getElementById('recovery-message');
+      if(p1.length < 8){
+        messageEl.className = 'form-message error';
+        messageEl.textContent = 'Use at least 8 characters.';
+        return;
+      }
+      if(p1 !== p2){
+        messageEl.className = 'form-message error';
+        messageEl.textContent = 'Passwords do not match.';
+        return;
+      }
+      const { error } = await supabaseClient.auth.updateUser({ password:p1 });
+      if(error){
+        messageEl.className = 'form-message error';
+        messageEl.textContent = error.message;
+        return;
+      }
+      recoveryMode = false;
+      messageEl.className = 'form-message success';
+      messageEl.textContent = 'Password updated. Loading Daybook…';
+      const { data:{ user } } = await supabaseClient.auth.getUser();
+      setTimeout(()=>enterApp(user), 500);
     });
-    document.getElementById('cancel-reset-btn').addEventListener('click', ()=>{
-      document.getElementById('forgot-confirm').style.display='none';
-    });
-    document.getElementById('confirm-reset-btn').addEventListener('click', async ()=>{
-      state = defaultState();
-      seedChecklistItems();
-      unlocked = true;
-      await saveState(true);
+  }
+
+  async function enterApp(user){
+    if(!user) return;
+    if(appReady && currentUser && currentUser.id===user.id) return;
+    if(enteringUserId===user.id) return;
+    enteringUserId = user.id;
+    currentUser = user;
+    showAppHeader(true);
+    try{
+      await loadState();
+      appReady = true;
       renderHome();
-    });
+    }catch(error){
+      console.error(error);
+      appReady = false;
+      showAppHeader(false);
+      renderAuth('signin', 'Could not load your journal. Check the Supabase table and security-policy setup.', 'error');
+    }finally{
+      enteringUserId = null;
+    }
+  }
+
+  function exportBackup(){
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      app: 'Daybook',
+      version: 1,
+      journalData: state
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `daybook-backup-${todayStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   function renderSettings(){
     nav.view='settings';
-    const hasPasscode = !!state.passcodeHash;
     contentEl.innerHTML = `
       <button class="back-link" data-nav="home">‹ Home</button>
       <h2 class="day-heading">Settings</h2>
       <section class="block">
-        <h2 class="block-title">Passcode Lock</h2>
-        <p class="checklist-note">${hasPasscode ? "A passcode is set. It's a privacy screen, not real encryption — anyone with dev-tools access to this browser could bypass it." : "Add a passcode to require it on load. It's a privacy screen, not real encryption."}</p>
-        <div id="pass-actions">
-          ${hasPasscode ? `
-            <button class="btn-ghost" id="change-pass-btn" style="margin-bottom:8px;">Change Passcode</button>
-            <button class="btn-ghost" id="remove-pass-btn">Remove Passcode</button>
-          ` : `
-            <div class="pass-form" id="set-pass-form">
-              <input type="password" id="new-pass" placeholder="New passcode">
-              <input type="password" id="confirm-pass" placeholder="Confirm passcode">
-              <div id="pass-error" class="lock-error"></div>
-              <button class="btn" id="save-pass-btn">Set Passcode</button>
-            </div>
-          `}
+        <h2 class="block-title">Account</h2>
+        <div class="card">
+          <div class="account-row"><span class="account-label">Signed in as</span><span class="account-value">${escapeHtml(currentUser.email||'')}</span></div>
+          <div class="account-row"><span class="account-label">Cloud status</span><span class="account-value" id="settings-sync-status">${escapeHtml(syncStatusEl.textContent||'Ready')}</span></div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn" id="sync-now-btn">Sync now</button>
+          <button class="btn-ghost" id="change-password-btn">Change password</button>
+          <button class="btn-ghost danger-btn" id="sign-out-btn">Sign out</button>
+        </div>
+        <div id="settings-message" class="form-message"></div>
+        <div id="change-password-form" class="hidden" style="margin-top:10px;">
+          <input class="auth-field" type="password" id="settings-new-password" autocomplete="new-password" placeholder="New password">
+          <input class="auth-field" type="password" id="settings-confirm-password" autocomplete="new-password" placeholder="Confirm new password">
+          <button class="btn" id="save-new-password-btn">Save password</button>
         </div>
       </section>
-    `;
+      <section class="block">
+        <h2 class="block-title">Backup</h2>
+        <p class="checklist-note">Export a JSON copy of the entire journal. Importing replaces the current journal after confirmation.</p>
+        <div class="settings-actions">
+          <button class="btn-ghost" id="export-backup-btn">Export backup</button>
+          <button class="btn-ghost" id="import-backup-btn">Import backup</button>
+          <input class="file-input" id="import-backup-file" type="file" accept="application/json,.json">
+        </div>
+      </section>`;
+
     contentEl.querySelector('[data-nav="home"]').addEventListener('click', renderHome);
+    const settingsMessage = document.getElementById('settings-message');
 
-    function wireSaveForm(onSaved){
-      document.getElementById('save-pass-btn').addEventListener('click', async ()=>{
-        const p1 = document.getElementById('new-pass').value;
-        const p2 = document.getElementById('confirm-pass').value;
-        const err = document.getElementById('pass-error');
-        if(!p1){ err.textContent='Enter a passcode.'; return; }
-        if(p1!==p2){ err.textContent="Passcodes don't match."; return; }
-        state.passcodeHash = simpleHash(p1);
+    document.getElementById('sync-now-btn').addEventListener('click', async ()=>{
+      settingsMessage.className = 'form-message';
+      settingsMessage.textContent = 'Syncing…';
+      try{
         await saveState(true);
-        onSaved();
-      });
-    }
+        document.getElementById('settings-sync-status').textContent = 'Synced';
+        settingsMessage.className = 'form-message success';
+        settingsMessage.textContent = 'Journal synced.';
+      }catch(error){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = error.message || 'Sync failed.';
+      }
+    });
 
-    if(!hasPasscode){
-      wireSaveForm(()=>renderSettings());
-    } else {
-      document.getElementById('remove-pass-btn').addEventListener('click', async ()=>{
-        state.passcodeHash = null;
+    document.getElementById('change-password-btn').addEventListener('click', ()=>{
+      document.getElementById('change-password-form').classList.toggle('hidden');
+    });
+    document.getElementById('save-new-password-btn').addEventListener('click', async ()=>{
+      const p1 = document.getElementById('settings-new-password').value;
+      const p2 = document.getElementById('settings-confirm-password').value;
+      if(p1.length < 8){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = 'Use at least 8 characters.';
+        return;
+      }
+      if(p1 !== p2){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = 'Passwords do not match.';
+        return;
+      }
+      const { error } = await supabaseClient.auth.updateUser({password:p1});
+      if(error){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = error.message;
+      }else{
+        settingsMessage.className = 'form-message success';
+        settingsMessage.textContent = 'Password updated.';
+        document.getElementById('change-password-form').classList.add('hidden');
+      }
+    });
+
+    document.getElementById('sign-out-btn').addEventListener('click', async ()=>{
+      await saveState(true);
+      const { error } = await supabaseClient.auth.signOut();
+      if(error){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = error.message;
+      }
+    });
+
+    document.getElementById('export-backup-btn').addEventListener('click', exportBackup);
+    const fileInput = document.getElementById('import-backup-file');
+    document.getElementById('import-backup-btn').addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', async ()=>{
+      const file = fileInput.files && fileInput.files[0];
+      if(!file) return;
+      try{
+        const parsed = JSON.parse(await file.text());
+        const imported = parsed.journalData || parsed;
+        if(!imported || typeof imported!=='object' || Array.isArray(imported)) throw new Error('Invalid Daybook backup.');
+        if(!window.confirm('Replace the current journal with this backup?')) return;
+        state = normalizeState(imported);
+        seedChecklistItems();
         await saveState(true);
-        renderSettings();
-      });
-      document.getElementById('change-pass-btn').addEventListener('click', ()=>{
-        document.getElementById('pass-actions').innerHTML = `
-          <div class="pass-form" id="set-pass-form">
-            <input type="password" id="new-pass" placeholder="New passcode">
-            <input type="password" id="confirm-pass" placeholder="Confirm passcode">
-            <div id="pass-error" class="lock-error"></div>
-            <button class="btn" id="save-pass-btn">Save New Passcode</button>
-          </div>
-        `;
-        wireSaveForm(()=>renderSettings());
-      });
-    }
+        document.body.setAttribute('data-theme', state.theme);
+        renderSwatches();
+        settingsMessage.className = 'form-message success';
+        settingsMessage.textContent = 'Backup imported and synced.';
+      }catch(error){
+        settingsMessage.className = 'form-message error';
+        settingsMessage.textContent = error.message || 'Could not import this file.';
+      }finally{
+        fileInput.value = '';
+      }
+    });
   }
 
   // Monday-start weeks, always 7 real days. First/last week of the grid
@@ -868,10 +1190,58 @@
     return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  document.getElementById('home-btn').addEventListener('click', ()=>{ if(unlocked) renderHome(); });
-  document.getElementById('settings-btn').addEventListener('click', ()=>{ if(unlocked) renderSettings(); });
+  document.getElementById('home-btn').addEventListener('click', ()=>{ if(appReady) renderHome(); });
+  document.getElementById('settings-btn').addEventListener('click', ()=>{ if(appReady) renderSettings(); });
 
-  loadState();
+  async function bootstrap(){
+    document.body.setAttribute('data-theme', 'sage');
+    if(!CONFIGURED || !window.supabase){
+      renderConfigNeeded();
+      return;
+    }
+
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
+    });
+
+    supabaseClient.auth.onAuthStateChange((event, session)=>{
+      setTimeout(()=>{
+        if(event==='PASSWORD_RECOVERY'){
+          currentUser = session && session.user ? session.user : currentUser;
+          renderPasswordRecovery();
+          return;
+        }
+        if(event==='SIGNED_OUT'){
+          currentUser = null;
+          appReady = false;
+          state = defaultState();
+          setSyncStatus('');
+          renderAuth('signin');
+          return;
+        }
+        if(session && session.user && !recoveryMode){
+          enterApp(session.user);
+        }
+      }, 0);
+    });
+
+    const { data, error } = await supabaseClient.auth.getSession();
+    if(error){
+      renderAuth('signin', error.message, 'error');
+      return;
+    }
+    if(data.session && data.session.user){
+      await enterApp(data.session.user);
+    }else{
+      renderAuth('signin');
+    }
+  }
+
+  bootstrap();
 })();
 </script>
 </body>
